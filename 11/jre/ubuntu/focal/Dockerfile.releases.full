@@ -17,7 +17,7 @@
 # limitations under the License.
 #
 
-FROM ubuntu:20.04
+FROM nvidia/cuda:11.4.3-cudnn8-runtime-ubuntu20.04
 
 ENV JAVA_HOME /opt/java/openjdk
 ENV PATH $JAVA_HOME/bin:$PATH
