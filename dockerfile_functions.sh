@@ -74,19 +74,19 @@ print_debianslim_ver() {
 }
 
 print_ubi_ver() {
-	os_version="8.4"
+	local os=$4
 
 	cat >> "$1" <<-EOI
-	FROM registry.access.redhat.com/ubi8/ubi:${os_version}
+	FROM redhat/${os}
 
 	EOI
 }
 
 print_ubi-minimal_ver() {
-	os_version="8.4"
+	local os=$4
 
 	cat >> "$1" <<-EOI
-	FROM registry.access.redhat.com/ubi8/ubi-minimal:${os_version}
+	FROM redhat/${os}
 
 	EOI
 }
@@ -156,7 +156,7 @@ EOI
 # Print the supported Alpine OS - this is for musl based images
 print_alpine_ver() {
 	cat >> "$1" <<-EOI
-	FROM alpine:3.16
+	FROM alpine:3.17
 
 	EOI
 }
@@ -235,16 +235,16 @@ EOI
 # Select the ubi OS packages.
 print_ubi_pkg() {
 	cat >> "$1" <<'EOI'
-RUN dnf install -y tzdata openssl wget ca-certificates fontconfig glibc-langpack-en gzip tar \
-    && dnf update -y; dnf clean all
+RUN dnf install -y binutils tzdata openssl wget ca-certificates fontconfig glibc-langpack-en gzip tar \
+    && dnf clean all
 EOI
 }
 
 # Select the ubi OS packages.
 print_ubi-minimal_pkg() {
 	cat >> "$1" <<'EOI'
-RUN microdnf install -y tzdata openssl wget ca-certificates fontconfig glibc-langpack-en gzip tar \
-    && microdnf update -y; microdnf clean all
+RUN microdnf install -y binutils tzdata openssl wget ca-certificates fontconfig glibc-langpack-en gzip tar \
+    && microdnf clean all
 EOI
 }
 
@@ -436,14 +436,14 @@ EOI
 
 print_java_install_post() {
 	cat >> "$1" <<-EOI
-    rm /tmp/openjdk.tar.gz;
+    rm -f /tmp/openjdk.tar.gz ${JAVA_HOME}/src.zip;
 EOI
 }
 
 print_ubuntu_java_install_post() {
 	above_8="^(9|[1-9][0-9]+)$"
 	cat >> "$1" <<-EOI
-    rm /tmp/openjdk.tar.gz; \\
+    rm -f /tmp/openjdk.tar.gz ${JAVA_HOME}/src.zip; \\
 # https://github.com/docker-library/openjdk/issues/331#issuecomment-498834472
     find "\$JAVA_HOME/lib" -name '*.so' -exec dirname '{}' ';' | sort -u > /etc/ld.so.conf.d/docker-openjdk.conf; \\
 EOI
@@ -687,7 +687,7 @@ print_ubi_java_install() {
 
 	cat >> "$1" <<-EOI
 RUN set -eux; \\
-    ARCH="\$(uname -m)"; \\
+    ARCH="\$(objdump="\$(command -v objdump)" && objdump --file-headers "\$objdump" | awk -F '[:,]+[[:space:]]+' '\$1 == "architecture" { print \$2 }')"; \\
     case "\${ARCH}" in \\
 EOI
 	print_java_install_pre "${file}" "${pkg}" "${bld}" "${btype}" "${osfamily}" "${os}"
@@ -770,29 +770,12 @@ EOI
 }
 
 # Turn on JVM specific optimization flags.
-# Hotspot container support = https://bugs.openjdk.java.net/browse/JDK-8189497
-# OpenJ9 container support = https://www.eclipse.org/openj9/docs/xxusecontainersupport/
-# OpenJ9 Idle tuning = https://www.eclipse.org/openj9/docs/xxidletuninggconidle/
 print_java_options() {
-	case ${vm} in
-	hotspot)
-		case ${version} in
-		9)
-			JOPTS="-XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap";
-			;;
-		esac
-		;;
-	openj9)
-		case ${os} in
-		windows)
-			JOPTS="-XX:+IgnoreUnrecognizedVMOptions -XX:+IdleTuningGcOnIdle";
-			;;
-		*)
-			JOPTS="-XX:+IgnoreUnrecognizedVMOptions -XX:+IdleTuningGcOnIdle -Xshareclasses:name=openj9_system_scc,cacheDir=/opt/java/.scc,readonly,nonFatal";
-			;;
-		esac
-		;;
-	esac
+  case ${version} in
+  9) # Hotspot@JDK9: https://bugs.openjdk.java.net/browse/JDK-8189497
+    JOPTS="-XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap";
+    ;;
+  esac
 
 	if [ -n "${JOPTS}" ]; then
 	cat >> "$1" <<-EOI
@@ -875,82 +858,6 @@ print_cmd() {
 	fi
 }
 
-print_scc_gen() {
-	local vm=$2;
-	local osfamily=$3;
-	local os=$4;
-
-	if [[ "${vm}" == "openj9" && "${osfamily}" != "windows" ]]; then
-        cat >> "$1" <<'EOI'
-
-# Create OpenJ9 SharedClassCache (SCC) for bootclasses to improve the java startup.
-# Downloads and runs tomcat to generate SCC for bootclasses at /opt/java/.scc/openj9_system_scc
-# Does a dry-run and calculates the optimal cache size and recreates the cache with the appropriate size.
-# With SCC, OpenJ9 startup is improved ~50% with an increase in image size of ~14MB
-# Application classes can be create a separate cache layer with this as the base for further startup improvement
-
-RUN set -eux; \
-EOI
-		if [[ "${os}" == "alpine" ]]; then
-			cat >> "$1" <<'EOI'
-    apk add --no-cache --virtual .scc-deps curl; \
-EOI
-		fi
-		cat >> "$1" <<'EOI'
-    unset OPENJ9_JAVA_OPTIONS; \
-    SCC_SIZE="50m"; \
-    DOWNLOAD_PATH_TOMCAT=/tmp/tomcat; \
-    INSTALL_PATH_TOMCAT=/opt/tomcat-home; \
-    TOMCAT_CHECKSUM="0db27185d9fc3174f2c670f814df3dda8a008b89d1a38a5d96cbbe119767ebfb1cf0bce956b27954aee9be19c4a7b91f2579d967932207976322033a86075f98"; \
-    TOMCAT_DWNLD_URL="https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.35/bin/apache-tomcat-9.0.35.tar.gz"; \
-    \
-    mkdir -p "${DOWNLOAD_PATH_TOMCAT}" "${INSTALL_PATH_TOMCAT}"; \
-    curl -LfsSo "${DOWNLOAD_PATH_TOMCAT}"/tomcat.tar.gz "${TOMCAT_DWNLD_URL}"; \
-    echo "${TOMCAT_CHECKSUM} *${DOWNLOAD_PATH_TOMCAT}/tomcat.tar.gz" | sha512sum -c -; \
-    tar -xf "${DOWNLOAD_PATH_TOMCAT}"/tomcat.tar.gz -C "${INSTALL_PATH_TOMCAT}" --strip-components=1; \
-    rm -rf "${DOWNLOAD_PATH_TOMCAT}"; \
-    \
-    java -Xshareclasses:name=dry_run_scc,cacheDir=/opt/java/.scc,bootClassesOnly,nonFatal,createLayer -Xscmx$SCC_SIZE -version; \
-    export OPENJ9_JAVA_OPTIONS="-Xshareclasses:name=dry_run_scc,cacheDir=/opt/java/.scc,bootClassesOnly,nonFatal"; \
-    "${INSTALL_PATH_TOMCAT}"/bin/startup.sh; \
-    sleep 5; \
-    "${INSTALL_PATH_TOMCAT}"/bin/shutdown.sh -force; \
-    sleep 15; \
-    FULL=$( (java -Xshareclasses:name=dry_run_scc,cacheDir=/opt/java/.scc,printallStats 2>&1 || true) | awk '/^Cache is [0-9.]*% .*full/ {print substr($3, 1, length($3)-1)}'); \
-    DST_CACHE=$(java -Xshareclasses:name=dry_run_scc,cacheDir=/opt/java/.scc,destroy 2>&1 || true); \
-    SCC_SIZE=$(echo $SCC_SIZE | sed 's/.$//'); \
-    SCC_SIZE=$(awk "BEGIN {print int($SCC_SIZE * $FULL / 100.0)}"); \
-    [ "${SCC_SIZE}" -eq 0 ] && SCC_SIZE=1; \
-    SCC_SIZE="${SCC_SIZE}m"; \
-    java -Xshareclasses:name=openj9_system_scc,cacheDir=/opt/java/.scc,bootClassesOnly,nonFatal,createLayer -Xscmx$SCC_SIZE -version; \
-    unset OPENJ9_JAVA_OPTIONS; \
-    \
-    export OPENJ9_JAVA_OPTIONS="-Xshareclasses:name=openj9_system_scc,cacheDir=/opt/java/.scc,bootClassesOnly,nonFatal"; \
-    "${INSTALL_PATH_TOMCAT}"/bin/startup.sh; \
-    sleep 5; \
-    "${INSTALL_PATH_TOMCAT}"/bin/shutdown.sh -force; \
-    sleep 5; \
-    FULL=$( (java -Xshareclasses:name=openj9_system_scc,cacheDir=/opt/java/.scc,printallStats 2>&1 || true) | awk '/^Cache is [0-9.]*% .*full/ {print substr($3, 1, length($3)-1)}'); \
-    echo "SCC layer is $FULL% full."; \
-    rm -rf "${INSTALL_PATH_TOMCAT}"; \
-    if [ -d "/opt/java/.scc" ]; then \
-          chmod -R 0777 /opt/java/.scc; \
-    fi; \
-    \
-EOI
-		if [[ "${os}" == "alpine" ]]; then
-			cat >> "$1" <<'EOI'
-    apk del --purge .scc-deps; \
-    rm -rf /var/cache/apk/*; \
-EOI
-    	fi
-		cat >> "$1" <<'EOI'
-    echo "SCC generation phase completed";
-
-EOI
-	fi
-}
-
 # Generate the dockerfile for a given build, build_type and OS
 generate_dockerfile() {
 	local file=$1
@@ -981,6 +888,8 @@ generate_dockerfile() {
 		distro="${os}"
 		case $file in
 			*ubuntu*) distro="ubuntu"; ;;
+			*ubi*-minimal*) distro="ubi-minimal"; ;;
+			*ubi*) distro="ubi"; ;;
 		esac
 		print_"${distro}"_ver "${file}" "${bld}" "${btype}" "${os}";
 		print_java_env "${file}" "${bld}" "${btype}" "${osfamily}";
@@ -990,7 +899,6 @@ generate_dockerfile() {
 		copy_slim_script "${file}";
 		print_"${distro}"_java_install "${file}" "${pkg}" "${bld}" "${btype}" "${osfamily}" "${os}";
 		print_java_options "${file}" "${bld}" "${btype}";
-		print_scc_gen "${file}" "${vm}" "${osfamily}" "${os}";
 		print_test "${file}";
 		print_cmd "${file}";
 	fi
