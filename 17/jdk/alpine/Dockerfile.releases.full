@@ -17,7 +17,7 @@
 # limitations under the License.
 #
 
-FROM alpine:3.17
+FROM alpine:3.18
 
 ENV JAVA_HOME /opt/java/openjdk
 ENV PATH $JAVA_HOME/bin:$PATH
@@ -52,7 +52,7 @@ RUN set -eux; \
 	      --strip-components 1 \
 	      --no-same-owner \
 	  ; \
-    rm -f /tmp/openjdk.tar.gz ${JAVA_HOME}/src.zip;
+    rm -f /tmp/openjdk.tar.gz ${JAVA_HOME}/lib/src.zip;
 
 RUN echo Verifying install ... \
     && fileEncoding="$(echo 'System.out.println(System.getProperty("file.encoding"))' | jshell -s -)"; [ "$fileEncoding" = 'UTF-8' ]; rm -rf ~/.java \
